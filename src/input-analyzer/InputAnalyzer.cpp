@@ -8,23 +8,72 @@
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 
+#include <iostream>
+#include <vector>
+
 using namespace clang;
 using namespace clang::ast_matchers;
 using namespace clang::tooling;
 using namespace llvm;
 
-StatementMatcher LoopMatcher =
-  forStmt(hasLoopInit(declStmt(hasSingleDecl(varDecl(
-    hasInitializer(integerLiteral(equals(0)))))))).bind("forLoop");
+std::vector<std::string> inputVars;
 
-class LoopPrinter : public MatchFinder::MatchCallback {
+StatementMatcher getcMatcher = callExpr(
+  callee(functionDecl(hasName("getc"))),
+  hasAncestor(
+    binaryOperator(hasOperatorName("=")).bind("binaryOp")
+  )
+).bind("getcCall");
+
+StatementMatcher scanfMatcher =
+  callExpr(callee(functionDecl(hasName("scanf")))).bind("scanfCall");
+
+
+class ScanfExtractor : public MatchFinder::MatchCallback {
 public :
   virtual void run(const MatchFinder::MatchResult &Result) {
-    if (const ForStmt *FS = Result.Nodes.getNodeAs<clang::ForStmt>("forLoop"))
-      FS->dump();
+    if (const CallExpr* ScanfCall = Result.Nodes.getNodeAs<CallExpr>("scanfCall")) {
+      llvm::outs() << "Found a scanf call with variables:";
+      for (unsigned i = 1; i < ScanfCall->getNumArgs(); i++) {
+        const Expr* ArgExpr = ScanfCall->getArg(i);
+        if (const UnaryOperator* UnOp = dyn_cast<UnaryOperator>(ArgExpr)) {
+          if (UnOp->getOpcode() == UO_AddrOf) {
+            const Expr* AddrExpr = UnOp->getSubExpr();
+            if (const DeclRefExpr* VarRef = dyn_cast<DeclRefExpr>(AddrExpr)) {
+              const VarDecl* Var = dyn_cast<VarDecl>(VarRef->getDecl());
+              if (Var) {
+                llvm::outs() << " " << Var->getName();
+                inputVars.push_back(Var->getNameAsString());
+              }
+            }
+          }
+        } else if (const DeclRefExpr* VarRef = dyn_cast<DeclRefExpr>(ArgExpr)) {
+          const VarDecl* Var = dyn_cast<VarDecl>(VarRef->getDecl());
+          if (Var) {
+            llvm::outs() << " " << Var->getNameAsString();
+            inputVars.push_back(Var->getNameAsString());
+          }
+        }
+      }
+      llvm::outs() << "\n";
+    }
   }
 };
 
+class GetcExtractor : public MatchFinder::MatchCallback {
+public :
+    virtual void run(const MatchFinder::MatchResult &Result) {
+    const auto *BinaryOp = Result.Nodes.getNodeAs<BinaryOperator>("binaryOp");
+    if (BinaryOp) {
+      const auto *Var = dyn_cast<DeclRefExpr>(BinaryOp->getLHS()->IgnoreImpCasts());
+      if (Var) {
+        const auto *VarDecl = Var->getDecl();
+        llvm::outs() << "Found getc() call assigned to variable: " << VarDecl->getNameAsString() << "\n";
+        inputVars.push_back(VarDecl->getNameAsString());
+      }
+    }
+    }
+};
 
 // Apply a custom category to all command-line options so that they are the
 // only ones displayed.
@@ -49,9 +98,20 @@ int main(int argc, const char **argv) {
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
 
-  LoopPrinter Printer;
+  GetcExtractor getcHandler;
+  ScanfExtractor scanfHandler;
   MatchFinder Finder;
-  Finder.addMatcher(LoopMatcher, &Printer);
 
-  return Tool.run(newFrontendActionFactory(&Finder).get());
+  Finder.addMatcher(getcMatcher, &getcHandler);
+  Finder.addMatcher(scanfMatcher, &scanfHandler);
+
+  Tool.run(newFrontendActionFactory(&Finder).get());
+
+  llvm::outs() << "Tool ran, input var list : ";
+
+  for(std::string var : inputVars)
+  {
+     llvm::outs()<< var <<" ";
+  }
+  llvm::outs() <<"\n";
 }
