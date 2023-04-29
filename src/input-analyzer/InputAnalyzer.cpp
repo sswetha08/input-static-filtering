@@ -22,6 +22,8 @@ using namespace clang::comments;
 using namespace llvm;
 
 std::vector<std::string> inputVars;
+std::map<int, std::string> keyPoints;
+
 
 // Create a map of var names to represent flowing value relatioship
 std::map<std::string, std::string> valFlow;
@@ -45,6 +47,49 @@ StatementMatcher assignMatcher = binaryOperator(
     hasRHS(expr(hasDescendant(declRefExpr())).bind("rhs"))
 ).bind("assign");
 
+
+StatementMatcher eofCheck = binaryOperator(
+      anyOf(hasOperatorName("=="), hasOperatorName("!=")),
+      hasRHS(parenExpr(has(unaryOperator(hasOperatorName("-"),
+      hasUnaryOperand(integerLiteral(equals(1))))
+      )))).bind("comparison");
+
+class EOFHandler : public MatchFinder::MatchCallback {
+public:
+  virtual void run(const MatchFinder::MatchResult &Result) {
+    const auto *binaryOp = Result.Nodes.getNodeAs<BinaryOperator>("comparison");
+    const auto* lhs = dyn_cast<Expr>(binaryOp->getLHS());
+    const auto* node = lhs->IgnoreImplicit()->IgnoreParens();
+    if (const auto *Recvnode = dyn_cast<DeclRefExpr>(node)) {
+        std::string name = Recvnode->getNameInfo().getAsString();
+        auto it = valFlow.find(name);  
+        if (it != valFlow.end()) {
+        std::cout <<"\n*Variable "<<name<<" does not directly affect execution, file length may be critical!\n";
+        }
+      } 
+  }
+};
+
+class VarRefHandler : public MatchFinder::MatchCallback {
+public:
+  virtual void run(const MatchFinder::MatchResult &Result) {
+    const DeclRefExpr *DRE = Result.Nodes.getNodeAs<DeclRefExpr>("declrefexpr");
+    const SourceManager &SM = *Result.SourceManager;
+    std::string varName = DRE->getNameInfo().getAsString();
+    auto it = valFlow.find(varName);  
+    if (it != valFlow.end()) {
+        SourceLocation Loc = DRE->getLocation();
+        int refLineNo = SM.getPresumedLineNumber(Loc);
+        auto itr = keyPoints.find(refLineNo);
+        if(itr != keyPoints.end())
+        {
+          std::cout << "\nInput variable: " << it->second <<" may determine the program's execution path!"<<std::endl;
+          std::cout << "Reason: variable " << it->first <<" affects "<<itr->second<<" at line: "<<SM.getPresumedLineNumber(Loc)<<" and its value is influenced by input."<<std::endl;
+        }
+    }
+  }
+};
+
 // Define the callback function to handle matched statements
 class AssignHandler : public MatchFinder::MatchCallback {
 public:
@@ -53,11 +98,18 @@ public:
     const auto *LhsDeclRef = Result.Nodes.getNodeAs<DeclRefExpr>("lhs");
     const auto *RhsExpr = Result.Nodes.getNodeAs<Expr>("rhs");
     if (LhsDeclRef && RhsExpr) {
-      llvm::errs() << "Found assignment statement with LHS: " << LhsDeclRef->getNameInfo().getAsString() << "\n";
-      llvm::errs() << "RHS DeclRefExprs: \n";
+      // llvm::errs() << "Found assignment statement with LHS: " << LhsDeclRef->getNameInfo().getAsString() << "\n";
+      // llvm::errs() << "RHS DeclRefExprs: \n";
+      std::string dest = LhsDeclRef->getNameInfo().getAsString();
       const auto *RhsSubExpr = RhsExpr->IgnoreImplicit()->IgnoreParens();
       if (const auto *RhsDeclRef = dyn_cast<DeclRefExpr>(RhsSubExpr)) {
-        llvm::errs() << "\t" << RhsDeclRef->getNameInfo().getAsString() << "\n";
+        // llvm::errs() << "\t" << RhsDeclRef->getNameInfo().getAsString() << "\n";
+        std::string name = RhsDeclRef->getNameInfo().getAsString();
+        auto it = valFlow.find(name);  
+        if (it != valFlow.end()) {
+          std::string parent = it->second;
+          valFlow.insert({ dest, parent }); 
+        }
       } 
       else if (const auto *binaryRHS = dyn_cast<BinaryOperator>(RhsSubExpr))
       {
@@ -71,9 +123,25 @@ public:
 
           if (l || r) {
             if (l)
-              llvm::errs() << "RHS LHS: " << l->getNameInfo().getName().getAsString() << "\n";
+            {
+              // llvm::errs() << "RHS LHS: " << l->getNameInfo().getName().getAsString() << "\n";
+              std::string lname = l->getNameInfo().getName().getAsString();
+              auto it = valFlow.find(lname);  
+              if (it != valFlow.end()) {
+                std::string parent = it->second;
+                valFlow.insert({ dest, parent }); 
+              }
+            }             
             if (r)
-              llvm::errs() << "RHS RHS: " << r->getNameInfo().getName().getAsString() << "\n";
+            {
+              // llvm::errs() << "RHS RHS: " << r->getNameInfo().getName().getAsString() << "\n";
+              std::string rname = r->getNameInfo().getName().getAsString();
+              auto it = valFlow.find(rname);  
+              if (it != valFlow.end()) {
+                std::string parent = it->second;
+                valFlow.insert({ dest, parent }); 
+              }
+            }
           }        
       }
     }
@@ -88,15 +156,15 @@ public:
     if (Label) {
       StringRef LabelName = Label->getName();
         if (LabelName.contains("key_point")) {
-          // Print the label name and line number
-          llvm::outs() << LabelName
-                      << " at line " << Result.Context->getSourceManager().getSpellingLineNumber(Label->getBeginLoc())
-                      << "\n";
+          int lineNo = Result.Context->getSourceManager().getSpellingLineNumber(Label->getBeginLoc());
+          // llvm::outs() << LabelName
+          //             << " at line " << Result.Context->getSourceManager().getSpellingLineNumber(Label->getBeginLoc())
+          //             << "\n";
+          keyPoints.insert({lineNo, LabelName.str()});
       }
     }
   }
 };
-
 
 class CommentFinder : public clang::ASTConsumer {
 public:
@@ -143,6 +211,7 @@ public :
               if (Var) {
                 llvm::outs() << " " << Var->getName();
                 inputVars.push_back(Var->getNameAsString());
+                valFlow.insert({Var->getNameAsString(), Var->getNameAsString()});
               }
             }
           }
@@ -151,6 +220,7 @@ public :
           if (Var) {
             llvm::outs() << " " << Var->getNameAsString();
             inputVars.push_back(Var->getNameAsString());
+            valFlow.insert({Var->getNameAsString(), Var->getNameAsString()});
           }
         }
       }
@@ -169,6 +239,7 @@ public :
         const auto *VarDecl = Var->getDecl();
         llvm::outs() << "Found getc() call assigned to variable: " << VarDecl->getNameAsString() << "\n";
         inputVars.push_back(VarDecl->getNameAsString());
+        valFlow.insert({VarDecl->getNameAsString(), VarDecl->getNameAsString()});
       }
     }
     }
@@ -203,6 +274,7 @@ int main(int argc, const char **argv) {
   LabelPrinter labelHandler;
   AssignHandler assignHandler;
 
+  // Find input variables and variables that are affected by inputs (def-use) using assign
   Finder.addMatcher(getcMatcher, &getcHandler);
   Finder.addMatcher(scanfMatcher, &scanfHandler);
   Finder.addMatcher(labelMatcher, &labelHandler);
@@ -210,13 +282,28 @@ int main(int argc, const char **argv) {
 
   Tool.run(newFrontendActionFactory(&Finder).get());
 
-  llvm::outs() << "Tool ran, input var list : ";
+  // llvm::outs() << "Input var list detected: ";
+  // for(std::string var : inputVars)
+  // {
+  //    llvm::outs()<< var <<" ";
+  // }
+  // llvm::outs() <<"\n";
 
-  for(std::string var : inputVars)
-  {
-     llvm::outs()<< var <<" ";
-  }
-  llvm::outs() <<"\n";
+  // Check if variables determined above influence key-points in the program
+  MatchFinder Finder2;
+  VarRefHandler varRefHandler;
+  Finder2.addMatcher(declRefExpr().bind("declrefexpr"), &varRefHandler);
+  Tool.run(newFrontendActionFactory(&Finder2).get());
+
+  // Look for deeper I/O semantics
+
+  llvm::outs() << "\nLooking for deeper I/O semantics... \n";
+  MatchFinder Finder3;
+  EOFHandler eofHandler;
+  Finder3.addMatcher(eofCheck, &eofHandler);
+  Tool.run(newFrontendActionFactory(&Finder3).get());
+
+  llvm::outs() << "\nStatic Analysis completed\n";
 
   return 0;
 }
