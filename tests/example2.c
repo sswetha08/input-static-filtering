@@ -12,5 +12,5 @@ int main(){
         str1[len++] = c;
         key_point_2: if (len>=1000) break; 
     }
-    //printf("%s\n", str1);
+    printf("%s\n", str1);
 }
