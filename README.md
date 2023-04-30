@@ -18,18 +18,41 @@ As Clang is part of the LLVM project, it is setup as a submodule in this project
 
 ```
 mkdir build && cd build
-cmake -G Ninja ../llvm-project/llvm -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra" -DLLVM_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+cmake -G Ninja ../llvm-project/llvm -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra" -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=host
 ninja
-ninja check       # Test LLVM only.
-ninja clang-test  # Test Clang only.
 ninja install
 ```
 
-Finally, we set Clang as its own compiler:
+Finally, we build again by setting Clang as its own compiler:
 ```
 cd build
-ccmake ../llvm-project/llvm
+cmake -G Ninja ../llvm-project/llvm -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ -DLLVM_TARGETS_TO_BUILD=host
 ninja
 ```
-The second command will bring up a GUI for configuring Clang. You need to set the entry for CMAKE_CXX_COMPILER. Press 't' to turn on advanced mode. Scroll down to CMAKE_CXX_COMPILER, and set it to /usr/bin/clang++, or wherever you installed it. Press 'c' to configure, then 'g' to generate CMake’s files.
-Finally, run ninja one more time to re-build.
+
+#### Add the Input Analyser tool to the build
+
+You will need to move the directory input-analyzer (inside src) into the clang-tools-extra repository.
+
+```
+cd ~/input-static-filtering
+cp -r src/input-analyzer clang-tools-extra/
+echo 'add_subdirectory(input-analyzer)' >> clang-tools-extra/CMakeLists.txt
+```
+
+With that done, Ninja will be able to compile the tool: (quick as it is an incremental build)
+
+```
+cd build
+ninja  
+```
+### Run the Tool:
+
+Example: 
+```
+cd build
+bin/input-analyzer ../tests/example4.c 
+```
+You can similarly run it on any of the example programs under the tests/ directory
+
+
