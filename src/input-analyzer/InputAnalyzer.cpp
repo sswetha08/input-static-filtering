@@ -25,9 +25,10 @@ std::vector<std::string> inputVars;
 std::map<int, std::string> keyPoints;
 
 
-// Create a map of var names to represent flowing value relatioship
+// Create a map of var names to represent flowing value relatioship (input-dependence list)
 std::map<std::string, std::string> valFlow;
 
+// AST matcher to match getc I/O calls
 StatementMatcher getcMatcher = callExpr(
   callee(functionDecl(hasName("getc"))),
   hasAncestor(
@@ -35,19 +36,21 @@ StatementMatcher getcMatcher = callExpr(
   )
 ).bind("getcCall");
 
+// AST matcher to match scanf I/O calls
 StatementMatcher scanfMatcher =
   callExpr(callee(functionDecl(hasName("scanf")))).bind("scanfCall");
 
 // Define a matcher for label statements
 StatementMatcher labelMatcher = labelStmt().bind("label");
 
+// Matcher for Assign statements containing var references
 StatementMatcher assignMatcher = binaryOperator(
     hasOperatorName("="),
     hasLHS(declRefExpr().bind("lhs")),
     hasRHS(expr(hasDescendant(declRefExpr())).bind("rhs"))
 ).bind("assign");
 
-
+// Matcher for comparison with EOF character
 StatementMatcher eofCheck = binaryOperator(
       anyOf(hasOperatorName("=="), hasOperatorName("!=")),
       hasRHS(parenExpr(has(unaryOperator(hasOperatorName("-"),
@@ -57,12 +60,12 @@ StatementMatcher eofCheck = binaryOperator(
 class EOFHandler : public MatchFinder::MatchCallback {
 public:
   virtual void run(const MatchFinder::MatchResult &Result) {
-    const auto *binaryOp = Result.Nodes.getNodeAs<BinaryOperator>("comparison");
+    const auto *binaryOp = Result.Nodes.getNodeAs<BinaryOperator>("comparison"); // Extract Binary operator node containing comparison
     const auto* lhs = dyn_cast<Expr>(binaryOp->getLHS());
-    const auto* node = lhs->IgnoreImplicit()->IgnoreParens();
+    const auto* node = lhs->IgnoreImplicit()->IgnoreParens(); // ignore implicit type casts
     if (const auto *Recvnode = dyn_cast<DeclRefExpr>(node)) {
         std::string name = Recvnode->getNameInfo().getAsString();
-        auto it = valFlow.find(name);  
+        auto it = valFlow.find(name);  // check if var referenced is in the input dependence list
         if (it != valFlow.end()) {
         std::cout <<"\n*Variable "<<name<<" does not directly affect execution, file length may be critical!\n";
         }
@@ -70,6 +73,7 @@ public:
   }
 };
 
+// Callback for traversing all var references
 class VarRefHandler : public MatchFinder::MatchCallback {
 public:
   virtual void run(const MatchFinder::MatchResult &Result) {
@@ -81,7 +85,7 @@ public:
         SourceLocation Loc = DRE->getLocation();
         int refLineNo = SM.getPresumedLineNumber(Loc);
         auto itr = keyPoints.find(refLineNo);
-        if(itr != keyPoints.end())
+        if(itr != keyPoints.end()) // check if variable is referenced at the defined keypoints
         {
           std::cout << "\nInput variable: " << it->second <<" may determine the program's execution path!"<<std::endl;
           std::cout << "Reason: variable " << it->first <<" affects "<<itr->second<<" at line: "<<SM.getPresumedLineNumber(Loc)<<" and its value is influenced by input."<<std::endl;
@@ -102,7 +106,8 @@ public:
       // llvm::errs() << "RHS DeclRefExprs: \n";
       std::string dest = LhsDeclRef->getNameInfo().getAsString();
       const auto *RhsSubExpr = RhsExpr->IgnoreImplicit()->IgnoreParens();
-      if (const auto *RhsDeclRef = dyn_cast<DeclRefExpr>(RhsSubExpr)) {
+      // if RHS contains only one var ref
+      if (const auto *RhsDeclRef = dyn_cast<DeclRefExpr>(RhsSubExpr)) { 
         // llvm::errs() << "\t" << RhsDeclRef->getNameInfo().getAsString() << "\n";
         std::string name = RhsDeclRef->getNameInfo().getAsString();
         auto it = valFlow.find(name);  
@@ -111,6 +116,7 @@ public:
           valFlow.insert({ dest, parent }); 
         }
       } 
+      // RHS is an expr with a binary op
       else if (const auto *binaryRHS = dyn_cast<BinaryOperator>(RhsSubExpr))
       {
           const auto* lhsRHS = dyn_cast<Expr>(binaryRHS->getLHS());
@@ -127,9 +133,10 @@ public:
               // llvm::errs() << "RHS LHS: " << l->getNameInfo().getName().getAsString() << "\n";
               std::string lname = l->getNameInfo().getName().getAsString();
               auto it = valFlow.find(lname);  
-              if (it != valFlow.end()) {
+              // check if lhs of binary operator is present in input-dependence list
+              if (it != valFlow.end()) { 
                 std::string parent = it->second;
-                valFlow.insert({ dest, parent }); 
+                valFlow.insert({ dest, parent }); // add the destination variable of Assign to the list
               }
             }             
             if (r)
@@ -137,9 +144,10 @@ public:
               // llvm::errs() << "RHS RHS: " << r->getNameInfo().getName().getAsString() << "\n";
               std::string rname = r->getNameInfo().getName().getAsString();
               auto it = valFlow.find(rname);  
-              if (it != valFlow.end()) {
+              // check if rhs of binary operator is present in input-dependence list
+              if (it != valFlow.end()) { 
                 std::string parent = it->second;
-                valFlow.insert({ dest, parent }); 
+                valFlow.insert({ dest, parent }); // add the destination variable of Assign to the list
               }
             }
           }        
@@ -148,6 +156,7 @@ public:
   }
 };
 
+// Callback to add key points
 class LabelPrinter : public MatchFinder::MatchCallback {
 public:
   virtual void run(const MatchFinder::MatchResult &Result) {
@@ -196,6 +205,7 @@ public:
   }
 };
 
+// Extract input variables from the matched scanf AST
 class ScanfExtractor : public MatchFinder::MatchCallback {
 public :
   virtual void run(const MatchFinder::MatchResult &Result) {
@@ -229,6 +239,7 @@ public :
   }
 };
 
+// Extract input variables from the matched getc AST
 class GetcExtractor : public MatchFinder::MatchCallback {
 public :
     virtual void run(const MatchFinder::MatchResult &Result) {
@@ -274,10 +285,12 @@ int main(int argc, const char **argv) {
   LabelPrinter labelHandler;
   AssignHandler assignHandler;
 
-  // Find input variables and variables that are affected by inputs (def-use) using assign
+  // Find input variables from I/O APIs
   Finder.addMatcher(getcMatcher, &getcHandler);
   Finder.addMatcher(scanfMatcher, &scanfHandler);
+  // Match key-points
   Finder.addMatcher(labelMatcher, &labelHandler);
+  // To create input-dependence list (def-use) by traversing assign statements
   Finder.addMatcher(assignMatcher, &assignHandler);
 
   Tool.run(newFrontendActionFactory(&Finder).get());
@@ -289,7 +302,7 @@ int main(int argc, const char **argv) {
   // }
   // llvm::outs() <<"\n";
 
-  // Check if variables determined above influence key-points in the program
+  // Check if input-dependence list created above influence key-points in the program 
   MatchFinder Finder2;
   VarRefHandler varRefHandler;
   Finder2.addMatcher(declRefExpr().bind("declrefexpr"), &varRefHandler);
