@@ -2,6 +2,15 @@
 
 ### Build and Installation process:
 
+**Note**: 
+
+To speed-up build times it is recommended to build and run this tool on the following VCL instance:
+Ubuntu 22.04 - 16 cores 128 GB RAM
+
+Clone the repository: 
+
+` git clone https://github.com/sswetha08/input-static-filtering.git `
+
 As Clang is part of the LLVM project, it is setup as a submodule in this project. To fetch it, do:
 
 ` git submodule update --recursive  --init `
@@ -17,6 +26,7 @@ As Clang is part of the LLVM project, it is setup as a submodule in this project
 #### Build Clang:
 
 ```
+cd input-static-filtering/
 mkdir build && cd build
 cmake -G Ninja ../llvm-project/llvm -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra" -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=host
 ninja
