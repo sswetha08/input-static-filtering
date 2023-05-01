@@ -66,4 +66,11 @@ bin/input-analyzer ../tests/example3.c
 ```
 You can similarly run it on any of the example programs under the tests/ directory
 
+### Outputs:
+
+![image](https://user-images.githubusercontent.com/23032578/235474614-97ecbe69-7174-4bad-a197-7e24c7fbe5c9.png)
+
+![image](https://user-images.githubusercontent.com/23032578/235474658-bed97524-9b2a-4905-aacc-f15487860613.png)
+
+
 
